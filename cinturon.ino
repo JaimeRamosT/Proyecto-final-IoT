@@ -35,19 +35,21 @@ const int MUESTRAS_CALIBRACION = 1000; // Número de lecturas para promediar en 
 #define NUM_SENSORES 2
 #define CANAL_LUMBAR 0
 #define CANAL_TORACICO 1
+#define CANAL_HOMBRO 2
 
 MPU6050 mpu;
 
 // --- Estado de sensores ---
 float anguloReferenciaLumbar = 0.0, anguloActualLumbar = 0.0;
 float anguloReferenciaToracico = 0.0, anguloActualToracico = 0.0;
+float anguloReferenciaHombro = 0.0, anguloActualHombro = 0.0;
 
-bool malaPosturaLumbar = false, malaPosturaToracico = false;
-unsigned long tiempoLumbar = 0, tiempoToracico = 0;
+bool malaPosturaLumbar = false, malaPosturaToracico = false, malaPosturaHombro = false;
+unsigned long tiempoLumbar = 0, tiempoToracico = 0, tiempoHombro;
 
 // Filtros Kalman independientes
-float xhatLumbar[2] = {0, 0}, xhatToracico[2] = {0, 0};
-float PLumbar[2][2] = {{1, 0}, {0, 1}}, PToracico[2][2] = {{1, 0}, {0, 1}};
+float xhatLumbar[2] = {0, 0}, xhatToracico[2] = {0, 0}, xhatHombro[2] = {0, 0};
+float PLumbar[2][2] = {{1, 0}, {0, 1}}, PToracico[2][2] = {{1, 0}, {0, 1}}, PHombro[2][2] = {{1, 0}, {0, 1}};
 
 // Temporizador
 unsigned long tiempoAnteriorLoop = 0;
@@ -86,9 +88,19 @@ void setup() {
   }
   Serial.println("MPU TORÁCICO conectado.");
 
+  seleccionarCanalMux(CANAL_HOMBRO);
+  mpu.initialize();
+  if (!mpu.testConnection()) {
+    Serial.println("MPU HOMBRO no detectado");
+    while (1);
+  }
+  Serial.println("MPU HOMBRO conectado.");
+
   // Calibración
   calibrarSensor(CANAL_LUMBAR, anguloReferenciaLumbar, xhatLumbar);
   calibrarSensor(CANAL_TORACICO, anguloReferenciaToracico, xhatToracico);
+  calibrarSensor(CANAL_HOMBRO, anguloReferenciaHombro, xhatHombro);
+
 
   tiempoAnteriorLoop = millis();
   Serial.println("\nSistema listo.");
@@ -111,9 +123,15 @@ void loop() {
     anguloActualToracico = calcularAngulo(dt, xhatToracico, PToracico);
     verificarPostura(UMBRAL_ANGULO_ALERTA_TORACICO, anguloActualToracico, anguloReferenciaToracico, malaPosturaToracico, tiempoToracico, MOTOR_PIN_TORACICO);
 
+    // HOMBRO
+    seleccionarCanalMux(CANAL_HOMBRO);
+    anguloActualHombro = calcularAngulo(dt, xhatHombro, PHombro);
+    verificarPostura(UMBRAL_ANGULO_ALERTA_HOMBRO, anguloActualHombro, anguloReferenciaHombro, malaPosturaHombro, tiempoHombro, MOTOR_PIN_LUMBAR);
+
     // Mostrar estado
     imprimirEstado("Lumbar", UMBRAL_ANGULO_ALERTA_LUMBAR, anguloActualLumbar, anguloReferenciaLumbar, MOTOR_PIN_LUMBAR);
     imprimirEstado("Toráxico", UMBRAL_ANGULO_ALERTA_TORACICO, anguloActualToracico, anguloReferenciaToracico, MOTOR_PIN_TORACICO);
+    imprimirEstado("Hombro", UMBRAL_ANGULO_ALERTA_HOMBRO, anguloActualHombro, anguloReferenciaHombro, MOTOR_PIN_LUMBAR);
   }
 }
 
