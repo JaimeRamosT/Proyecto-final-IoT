@@ -28,13 +28,13 @@ const float Q_BIAS  = 0.003; // Ruido del proceso para la deriva del giroscopio
 const float R_MEAS  = 0.03;  // Ruido de la medición del acelerómetro
 
 // Calibración
-const int MUESTRAS_CALIBRACION = 1000; // Número de lecturas para promediar en la calibración
+const int MUESTRAS_CALIBRACION = 100; // Número de lecturas para promediar en la calibración
 
 // --- PCA9548A ---
 #define MUX_ADDR 0x70
 #define NUM_SENSORES 2
 #define CANAL_LUMBAR 0
-#define CANAL_TORACICO 1
+#define CANAL_TORACICO 3
 #define CANAL_HOMBRO 2
 
 MPU6050 mpu;
@@ -64,6 +64,7 @@ void seleccionarCanalMux(uint8_t canal) {
 
 void setup() {
   Serial.begin(115200);
+  Serial1.begin(115200);
   Wire.begin();
 
   pinMode(MOTOR_PIN_LUMBAR, OUTPUT);
@@ -133,6 +134,7 @@ void loop() {
     imprimirEstado("Toráxico", UMBRAL_ANGULO_ALERTA_TORACICO, anguloActualToracico, anguloReferenciaToracico, MOTOR_PIN_TORACICO);
     imprimirEstado("Hombro", UMBRAL_ANGULO_ALERTA_HOMBRO, anguloActualHombro, anguloReferenciaHombro, MOTOR_PIN_LUMBAR);
   }
+  enviarDatosESP32();
 }
 
 void calibrarSensor(uint8_t canal, float &ref, float xhat[2]) {
@@ -227,4 +229,42 @@ void imprimirEstado(const char* nombre, float anguloAlerta, float angulo, float 
   } else {
     Serial.println("Postura OK");
   }
+}
+
+void enviarDatosESP32() {
+  // Crear mensaje JSON con los datos de los sensores
+  Serial1.print("{");
+  Serial1.print("\"lumbar\":{\"angulo\":");
+  Serial1.print(anguloActualLumbar, 2);
+  Serial1.print(",\"referencia\":");
+  Serial1.print(anguloReferenciaLumbar, 2);
+  Serial1.print(",\"alerta\":");
+  Serial1.print((abs(anguloActualLumbar - anguloReferenciaLumbar) > UMBRAL_ANGULO_ALERTA_LUMBAR) ? "true" : "false");
+  Serial1.print(",\"motor\":");
+  Serial1.print((digitalRead(MOTOR_PIN_LUMBAR) == HIGH) ? "true" : "false");
+  Serial1.print("},");
+  
+  Serial1.print("\"toracico\":{\"angulo\":");
+  Serial1.print(anguloActualToracico, 2);
+  Serial1.print(",\"referencia\":");
+  Serial1.print(anguloReferenciaToracico, 2);
+  Serial1.print(",\"alerta\":");
+  Serial1.print((abs(anguloActualToracico - anguloReferenciaToracico) > UMBRAL_ANGULO_ALERTA_TORACICO) ? "true" : "false");
+  Serial1.print(",\"motor\":");
+  Serial1.print((digitalRead(MOTOR_PIN_TORACICO) == HIGH) ? "true" : "false");
+  Serial1.print("},");
+  
+  Serial1.print("\"hombro\":{\"angulo\":");
+  Serial1.print(anguloActualHombro, 2);
+  Serial1.print(",\"referencia\":");
+  Serial1.print(anguloReferenciaHombro, 2);
+  Serial1.print(",\"alerta\":");
+  Serial1.print((abs(anguloActualHombro - anguloReferenciaHombro) > UMBRAL_ANGULO_ALERTA_HOMBRO) ? "true" : "false");
+  Serial1.print(",\"motor\":");
+  Serial1.print((digitalRead(MOTOR_PIN_LUMBAR) == HIGH) ? "true" : "false");
+  Serial1.print("},");
+  
+  Serial1.print("\"timestamp\":");
+  Serial1.print(millis());
+  Serial1.println("}");
 }
