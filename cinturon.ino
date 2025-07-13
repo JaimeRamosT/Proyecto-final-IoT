@@ -2,26 +2,37 @@
 #include "MPU6050.h"
 #include "Wire.h"
 
-// Umbral: Amarillo
+// Amarillo: Lumbar
+// Naranja: Toráxico
+// Morado: Axial
 
-// --- Pines de salida ---
+// --- CONSTANTES DE CONFIGURACIÓN ---
+// Pines
 const int MOTOR_PIN_LUMBAR = 3;
 const int MOTOR_PIN_TORACICO = 4;
+// const int MOTOR_PIN_HOMBRO = 5;   -- Morido
 
-// --- Umbrales y tiempos ---
-const float UMBRAL_ANGULO_ALERTA = 15.0;
-const unsigned long TIEMPO_CONFIRMACION_MALA_POSTURA = 1000;
-const float SENSITIVIDAD_GIROSCOPO = 131.0;
-const unsigned long INTERVALO_LECTURA = 50;
+// Umbrales y Tiempos
+const float UMBRAL_ANGULO_ALERTA_LUMBAR = 15.0; // Grados de desviación permitidos. Aumentado ligeramente para la espalda torácica.
+const float UMBRAL_ANGULO_ALERTA_TORACICO = 10.0;
+const float UMBRAL_ANGULO_ALERTA_HOMBRO = 12.0;
+const unsigned long TIEMPO_CONFIRMACION_MALA_POSTURA = 1000; // 1 segundo en mala postura para activar el motor (evita falsos positivos).
 
-// --- Filtro de Kalman ---
-const float Q_ANGLE = 0.001;
-const float Q_BIAS  = 0.003;
-const float R_MEAS  = 0.03;
-const int MUESTRAS_CALIBRACION = 500;
+// Sensor y Filtro
+const float SENSITIVIDAD_GIROSCOPO = 131.0; // Para la configuración por defecto del MPU6050
+const unsigned long INTERVALO_LECTURA = 50; // 50ms = 20Hz
+
+// Parámetros del Filtro de Kalman (ajusta estos si es necesario)
+const float Q_ANGLE = 0.001; // Ruido del proceso para el ángulo
+const float Q_BIAS  = 0.003; // Ruido del proceso para la deriva del giroscopio
+const float R_MEAS  = 0.03;  // Ruido de la medición del acelerómetro
+
+// Calibración
+const int MUESTRAS_CALIBRACION = 1000; // Número de lecturas para promediar en la calibración
 
 // --- PCA9548A ---
 #define MUX_ADDR 0x70
+#define NUM_SENSORES 2
 #define CANAL_LUMBAR 0
 #define CANAL_TORACICO 1
 
@@ -93,16 +104,16 @@ void loop() {
     // LUMBAR
     seleccionarCanalMux(CANAL_LUMBAR);
     anguloActualLumbar = calcularAngulo(dt, xhatLumbar, PLumbar);
-    verificarPostura(anguloActualLumbar, anguloReferenciaLumbar, malaPosturaLumbar, tiempoLumbar, MOTOR_PIN_LUMBAR);
+    verificarPostura(UMBRAL_ANGULO_ALERTA_LUMBAR, anguloActualLumbar, anguloReferenciaLumbar, malaPosturaLumbar, tiempoLumbar, MOTOR_PIN_LUMBAR);
 
     // TORÁCICO
     seleccionarCanalMux(CANAL_TORACICO);
     anguloActualToracico = calcularAngulo(dt, xhatToracico, PToracico);
-    verificarPostura(anguloActualToracico, anguloReferenciaToracico, malaPosturaToracico, tiempoToracico, MOTOR_PIN_TORACICO);
+    verificarPostura(UMBRAL_ANGULO_ALERTA_TORACICO, anguloActualToracico, anguloReferenciaToracico, malaPosturaToracico, tiempoToracico, MOTOR_PIN_TORACICO);
 
     // Mostrar estado
-    imprimirEstado("Lumbar", anguloActualLumbar, anguloReferenciaLumbar, MOTOR_PIN_LUMBAR);
-    imprimirEstado("Torácico", anguloActualToracico, anguloReferenciaToracico, MOTOR_PIN_TORACICO);
+    imprimirEstado("Lumbar", UMBRAL_ANGULO_ALERTA_LUMBAR, anguloActualLumbar, anguloReferenciaLumbar, MOTOR_PIN_LUMBAR);
+    imprimirEstado("Toráxico", UMBRAL_ANGULO_ALERTA_TORACICO, anguloActualToracico, anguloReferenciaToracico, MOTOR_PIN_TORACICO);
   }
 }
 
@@ -166,9 +177,9 @@ float obtenerAnguloAcelerometro() {
   return atan2(ax, az) * 180.0 / PI;
 }
 
-void verificarPostura(float anguloActual, float anguloRef, bool &malaPostura, unsigned long &tInicio, int pin) {
+void verificarPostura(float anguloAlerta, float anguloActual, float anguloRef, bool &malaPostura, unsigned long &tInicio, int pin) {
   float dif = anguloActual - anguloRef;
-  if (abs(dif) > UMBRAL_ANGULO_ALERTA) {
+  if (abs(dif) > anguloAlerta) {
     if (!malaPostura) {
       malaPostura = true;
       tInicio = millis();
@@ -183,14 +194,14 @@ void verificarPostura(float anguloActual, float anguloRef, bool &malaPostura, un
   }
 }
 
-void imprimirEstado(const char* nombre, float angulo, float ref, int pin) {
+void imprimirEstado(const char* nombre, float anguloAlerta, float angulo, float ref, int pin) {
   Serial.print(nombre);
   Serial.print(" | Ángulo: ");
   Serial.print(angulo, 1);
   Serial.print(" | Ref: ");
   Serial.print(ref, 1);
   Serial.print(" | Estado: ");
-  if (abs(angulo - ref) > UMBRAL_ANGULO_ALERTA) {
+  if (abs(angulo - ref) > anguloAlerta) {
     if (digitalRead(pin) == HIGH)
       Serial.println("ALERTA (Motor ON)");
     else
