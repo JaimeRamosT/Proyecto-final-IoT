@@ -13,33 +13,33 @@ const int MOTOR_PIN_TORACICO = 4;
 // const int MOTOR_PIN_HOMBRO = 5;   -- Morido
 
 // Umbrales y Tiempos
-const float UMBRAL_ANGULO_ALERTA_LUMBAR = 15.0; // Grados de desviación permitidos. Aumentado ligeramente para la espalda torácica.
+const float UMBRAL_ANGULO_ALERTA_LUMBAR = 15.0;
 const float UMBRAL_ANGULO_ALERTA_TORACICO = 10.0;
 const float UMBRAL_ANGULO_ALERTA_HOMBRO = 12.0;
-const unsigned long TIEMPO_CONFIRMACION_MALA_POSTURA = 1000; // 1 segundo en mala postura para activar el motor (evita falsos positivos).
+const unsigned long TIEMPO_CONFIRMACION_MALA_POSTURA = 1000;
 
 // Sensor y Filtro
-const float SENSITIVIDAD_GIROSCOPO = 131.0; // Para la configuración por defecto del MPU6050
-const unsigned long INTERVALO_LECTURA = 50; // 50ms = 20Hz
+const float SENSITIVIDAD_GIROSCOPO = 131.0;
+const unsigned long INTERVALO_LECTURA = 50;
 
-// Parámetros del Filtro de Kalman (ajusta estos si es necesario)
-const float Q_ANGLE = 0.001; // Ruido del proceso para el ángulo
-const float Q_BIAS  = 0.003; // Ruido del proceso para la deriva del giroscopio
-const float R_MEAS  = 0.03;  // Ruido de la medición del acelerómetro
+// Parámetros del Filtro de Kalman
+const float Q_ANGLE = 0.001;
+const float Q_BIAS  = 0.003;
+const float R_MEAS  = 0.03;
 
 // Calibración
-const int MUESTRAS_CALIBRACION = 100; // Número de lecturas para promediar en la calibración
+const int MUESTRAS_CALIBRACION = 100;
 
 // --- PCA9548A ---
 #define MUX_ADDR 0x70
-#define NUM_SENSORES 2
+#define NUM_SENSORES 3
 #define CANAL_LUMBAR 0
-#define CANAL_TORACICO 3
+#define CANAL_TORACICO 1
 #define CANAL_HOMBRO 2
 
-MPU6050 mpu;
+MPU6050 mpuLumbar, mpuToracico, mpuHombro;
 
-// --- Estado de sensores ---
+// Estado de sensores
 float anguloReferenciaLumbar = 0.0, anguloActualLumbar = 0.0;
 float anguloReferenciaToracico = 0.0, anguloActualToracico = 0.0;
 float anguloReferenciaHombro = 0.0, anguloActualHombro = 0.0;
@@ -47,14 +47,10 @@ float anguloReferenciaHombro = 0.0, anguloActualHombro = 0.0;
 bool malaPosturaLumbar = false, malaPosturaToracico = false, malaPosturaHombro = false;
 unsigned long tiempoLumbar = 0, tiempoToracico = 0, tiempoHombro;
 
-// Filtros Kalman independientes
 float xhatLumbar[2] = {0, 0}, xhatToracico[2] = {0, 0}, xhatHombro[2] = {0, 0};
 float PLumbar[2][2] = {{1, 0}, {0, 1}}, PToracico[2][2] = {{1, 0}, {0, 1}}, PHombro[2][2] = {{1, 0}, {0, 1}};
 
-// Temporizador
 unsigned long tiempoAnteriorLoop = 0;
-
-// --- Funciones ---
 
 void seleccionarCanalMux(uint8_t canal) {
   Wire.beginTransmission(MUX_ADDR);
@@ -64,7 +60,6 @@ void seleccionarCanalMux(uint8_t canal) {
 
 void setup() {
   Serial.begin(115200);
-  Serial1.begin(115200);
   Wire.begin();
 
   pinMode(MOTOR_PIN_LUMBAR, OUTPUT);
@@ -72,36 +67,33 @@ void setup() {
   digitalWrite(MOTOR_PIN_LUMBAR, LOW);
   digitalWrite(MOTOR_PIN_TORACICO, LOW);
 
-  // Inicialización de sensores
   seleccionarCanalMux(CANAL_LUMBAR);
-  mpu.initialize();
-  if (!mpu.testConnection()) {
+  mpuLumbar.initialize();
+  if (!mpuLumbar.testConnection()) {
     Serial.println("MPU LUMBAR no detectado");
     while (1);
   }
   Serial.println("MPU LUMBAR conectado.");
 
   seleccionarCanalMux(CANAL_TORACICO);
-  mpu.initialize();
-  if (!mpu.testConnection()) {
+  mpuToracico.initialize();
+  if (!mpuToracico.testConnection()) {
     Serial.println("MPU TORÁCICO no detectado");
     while (1);
   }
   Serial.println("MPU TORÁCICO conectado.");
 
   seleccionarCanalMux(CANAL_HOMBRO);
-  mpu.initialize();
-  if (!mpu.testConnection()) {
+  mpuHombro.initialize();
+  if (!mpuHombro.testConnection()) {
     Serial.println("MPU HOMBRO no detectado");
     while (1);
   }
   Serial.println("MPU HOMBRO conectado.");
 
-  // Calibración
-  calibrarSensor(CANAL_LUMBAR, anguloReferenciaLumbar, xhatLumbar);
-  calibrarSensor(CANAL_TORACICO, anguloReferenciaToracico, xhatToracico);
-  calibrarSensor(CANAL_HOMBRO, anguloReferenciaHombro, xhatHombro);
-
+  calibrarSensor(CANAL_LUMBAR, mpuLumbar, anguloReferenciaLumbar, xhatLumbar);
+  calibrarSensor(CANAL_TORACICO, mpuToracico, anguloReferenciaToracico, xhatToracico);
+  calibrarSensor(CANAL_HOMBRO, mpuHombro, anguloReferenciaHombro, xhatHombro);
 
   tiempoAnteriorLoop = millis();
   Serial.println("\nSistema listo.");
@@ -114,30 +106,28 @@ void loop() {
   if (ahora - tiempoAnteriorLoop >= INTERVALO_LECTURA) {
     tiempoAnteriorLoop = ahora;
 
-    // LUMBAR
     seleccionarCanalMux(CANAL_LUMBAR);
-    anguloActualLumbar = calcularAngulo(dt, xhatLumbar, PLumbar);
+    anguloActualLumbar = calcularAngulo(mpuLumbar, dt, xhatLumbar, PLumbar);
     verificarPostura(UMBRAL_ANGULO_ALERTA_LUMBAR, anguloActualLumbar, anguloReferenciaLumbar, malaPosturaLumbar, tiempoLumbar, MOTOR_PIN_LUMBAR);
 
-    // TORÁCICO
     seleccionarCanalMux(CANAL_TORACICO);
-    anguloActualToracico = calcularAngulo(dt, xhatToracico, PToracico);
+    anguloActualToracico = calcularAngulo(mpuToracico, dt, xhatToracico, PToracico);
     verificarPostura(UMBRAL_ANGULO_ALERTA_TORACICO, anguloActualToracico, anguloReferenciaToracico, malaPosturaToracico, tiempoToracico, MOTOR_PIN_TORACICO);
 
-    // HOMBRO
     seleccionarCanalMux(CANAL_HOMBRO);
-    anguloActualHombro = calcularAngulo(dt, xhatHombro, PHombro);
+    anguloActualHombro = calcularAngulo(mpuHombro, dt, xhatHombro, PHombro);
     verificarPostura(UMBRAL_ANGULO_ALERTA_HOMBRO, anguloActualHombro, anguloReferenciaHombro, malaPosturaHombro, tiempoHombro, MOTOR_PIN_LUMBAR);
 
-    // Mostrar estado
     imprimirEstado("Lumbar", UMBRAL_ANGULO_ALERTA_LUMBAR, anguloActualLumbar, anguloReferenciaLumbar, MOTOR_PIN_LUMBAR);
     imprimirEstado("Toráxico", UMBRAL_ANGULO_ALERTA_TORACICO, anguloActualToracico, anguloReferenciaToracico, MOTOR_PIN_TORACICO);
     imprimirEstado("Hombro", UMBRAL_ANGULO_ALERTA_HOMBRO, anguloActualHombro, anguloReferenciaHombro, MOTOR_PIN_LUMBAR);
   }
+  
   enviarDatosESP32();
+  delay(1000);
 }
 
-void calibrarSensor(uint8_t canal, float &ref, float xhat[2]) {
+void calibrarSensor(uint8_t canal, MPU6050 &mpuSensor, float &ref, float xhat[2]) {
   Serial.print("\nCalibrando canal ");
   Serial.print(canal);
   Serial.println("... Mantente quieto.");
@@ -146,7 +136,7 @@ void calibrarSensor(uint8_t canal, float &ref, float xhat[2]) {
   float suma = 0;
   for (int i = 0; i < MUESTRAS_CALIBRACION; i++) {
     seleccionarCanalMux(canal);
-    suma += obtenerAnguloAcelerometro();
+    suma += obtenerAnguloAcelerometro(mpuSensor);
     delay(10);
   }
   ref = suma / MUESTRAS_CALIBRACION;
@@ -158,23 +148,27 @@ void calibrarSensor(uint8_t canal, float &ref, float xhat[2]) {
   Serial.println(ref);
 }
 
-float calcularAngulo(float dt, float xhat[2], float P[2][2]) {
+float calcularAngulo(MPU6050 &mpuSensor, float dt, float xhat[2], float P[2][2]) {
   int16_t ax, ay, az, gx, gy, gz;
-  mpu.getMotion6(&ax, &ay, &az, &gx, &gy, &gz);
+  mpuSensor.getMotion6(&ax, &ay, &az, &gx, &gy, &gz);
   float angAcc = atan2(ax, az) * 180.0 / PI;
   float velGyro = gy / SENSITIVIDAD_GIROSCOPO;
   return kalmanUpdate(angAcc, velGyro, dt, xhat, P);
 }
 
+float obtenerAnguloAcelerometro(MPU6050 &mpuSensor) {
+  int16_t ax, ay, az;
+  mpuSensor.getAcceleration(&ax, &ay, &az);
+  return atan2(ax, az) * 180.0 / PI;
+}
+
 float kalmanUpdate(float medidaAcc, float velGyro, float dt, float xhat[2], float P[2][2]) {
-  // Predicción
   xhat[0] += dt * (velGyro - xhat[1]);
   P[0][0] += dt * (dt * P[1][1] - P[0][1] - P[1][0] + Q_ANGLE);
   P[0][1] -= dt * P[1][1];
   P[1][0] -= dt * P[1][1];
   P[1][1] += Q_BIAS * dt;
 
-  // Actualización
   float S = P[0][0] + R_MEAS;
   float K[2] = {P[0][0] / S, P[1][0] / S};
   float y = medidaAcc - xhat[0];
@@ -189,12 +183,6 @@ float kalmanUpdate(float medidaAcc, float velGyro, float dt, float xhat[2], floa
   P[1][1] -= K[1] * P01_temp;
 
   return xhat[0];
-}
-
-float obtenerAnguloAcelerometro() {
-  int16_t ax, ay, az;
-  mpu.getAcceleration(&ax, &ay, &az);
-  return atan2(ax, az) * 180.0 / PI;
 }
 
 void verificarPostura(float anguloAlerta, float anguloActual, float anguloRef, bool &malaPostura, unsigned long &tInicio, int pin) {
@@ -232,7 +220,6 @@ void imprimirEstado(const char* nombre, float anguloAlerta, float angulo, float 
 }
 
 void enviarDatosESP32() {
-  // Crear mensaje JSON con los datos de los sensores
   Serial1.print("{");
   Serial1.print("\"lumbar\":{\"angulo\":");
   Serial1.print(anguloActualLumbar, 2);
@@ -243,7 +230,7 @@ void enviarDatosESP32() {
   Serial1.print(",\"motor\":");
   Serial1.print((digitalRead(MOTOR_PIN_LUMBAR) == HIGH) ? "true" : "false");
   Serial1.print("},");
-  
+
   Serial1.print("\"toracico\":{\"angulo\":");
   Serial1.print(anguloActualToracico, 2);
   Serial1.print(",\"referencia\":");
@@ -253,7 +240,7 @@ void enviarDatosESP32() {
   Serial1.print(",\"motor\":");
   Serial1.print((digitalRead(MOTOR_PIN_TORACICO) == HIGH) ? "true" : "false");
   Serial1.print("},");
-  
+
   Serial1.print("\"hombro\":{\"angulo\":");
   Serial1.print(anguloActualHombro, 2);
   Serial1.print(",\"referencia\":");
@@ -263,7 +250,7 @@ void enviarDatosESP32() {
   Serial1.print(",\"motor\":");
   Serial1.print((digitalRead(MOTOR_PIN_LUMBAR) == HIGH) ? "true" : "false");
   Serial1.print("},");
-  
+
   Serial1.print("\"timestamp\":");
   Serial1.print(millis());
   Serial1.println("}");
