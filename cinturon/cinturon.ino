@@ -45,7 +45,7 @@ float anguloReferenciaToracico = 0.0, anguloActualToracico = 0.0;
 float anguloReferenciaHombro = 0.0, anguloActualHombro = 0.0;
 
 bool malaPosturaLumbar = false, malaPosturaToracico = false, malaPosturaHombro = false;
-unsigned long tiempoLumbar = 0, tiempoToracico = 0, tiempoHombro;
+unsigned long tiempoLumbar = 0, tiempoToracico = 0, tiempoHombro = 0;
 
 float xhatLumbar[2] = {0, 0}, xhatToracico[2] = {0, 0}, xhatHombro[2] = {0, 0};
 float PLumbar[2][2] = {{1, 0}, {0, 1}}, PToracico[2][2] = {{1, 0}, {0, 1}}, PHombro[2][2] = {{1, 0}, {0, 1}};
