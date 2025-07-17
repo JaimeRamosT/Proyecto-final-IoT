@@ -45,7 +45,7 @@ float anguloReferenciaToracico = 0.0, anguloActualToracico = 0.0;
 float anguloReferenciaHombro = 0.0, anguloActualHombro = 0.0;
 
 bool malaPosturaLumbar = false, malaPosturaToracico = false, malaPosturaHombro = false;
-unsigned long tiempoLumbar = 0, tiempoToracico = 0, tiempoHombro;
+unsigned long tiempoLumbar = 0, tiempoToracico = 0, tiempoHombro = 0;
 
 float xhatLumbar[2] = {0, 0}, xhatToracico[2] = {0, 0}, xhatHombro[2] = {0, 0};
 float PLumbar[2][2] = {{1, 0}, {0, 1}}, PToracico[2][2] = {{1, 0}, {0, 1}}, PHombro[2][2] = {{1, 0}, {0, 1}};
@@ -55,11 +55,19 @@ unsigned long tiempoAnteriorLoop = 0;
 void seleccionarCanalMux(uint8_t canal) {
   Wire.beginTransmission(MUX_ADDR);
   Wire.write(1 << canal);
-  Wire.endTransmission();
+  uint8_t err = Wire.endTransmission();
+  if (err) {
+    Serial.print("Error MUX canal ");
+    Serial.print(canal);
+    Serial.print(": ");
+    Serial.println(err);
+  }
+  delayMicroseconds(100);
 }
 
 void setup() {
   Serial.begin(115200);
+  Serial1.begin(115200);
   Wire.begin();
 
   pinMode(MOTOR_PIN_LUMBAR, OUTPUT);
@@ -70,6 +78,7 @@ void setup() {
   digitalWrite(MOTOR_PIN_HOMBRO, LOW);
 
   seleccionarCanalMux(CANAL_LUMBAR);
+  
   mpuLumbar.initialize();
   if (!mpuLumbar.testConnection()) {
     Serial.println("MPU LUMBAR no detectado");
@@ -78,6 +87,7 @@ void setup() {
   Serial.println("MPU LUMBAR conectado.");
 
   seleccionarCanalMux(CANAL_TORACICO);
+  Serial.println("Cambio a toracico");
   mpuToracico.initialize();
   if (!mpuToracico.testConnection()) {
     Serial.println("MPU TORÁCICO no detectado");
@@ -125,7 +135,7 @@ void loop() {
     imprimirEstado("Hombro", UMBRAL_ANGULO_ALERTA_HOMBRO, anguloActualHombro, anguloReferenciaHombro, MOTOR_PIN_HOMBRO);
   }
   
-  enviarDatosESP32();
+  //enviarDatosESP32();
   delay(1000);
 }
 
