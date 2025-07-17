@@ -10,7 +10,7 @@
 // Pines
 const int MOTOR_PIN_LUMBAR = 3;
 const int MOTOR_PIN_TORACICO = 4;
-// const int MOTOR_PIN_HOMBRO = 5;   -- Morido
+const int MOTOR_PIN_HOMBRO = 5;  // -- Morido
 
 // Umbrales y Tiempos
 const float UMBRAL_ANGULO_ALERTA_LUMBAR = 15.0;
@@ -64,8 +64,10 @@ void setup() {
 
   pinMode(MOTOR_PIN_LUMBAR, OUTPUT);
   pinMode(MOTOR_PIN_TORACICO, OUTPUT);
+  pinMode(MOTOR_PIN_HOMBRO, OUTPUT);
   digitalWrite(MOTOR_PIN_LUMBAR, LOW);
   digitalWrite(MOTOR_PIN_TORACICO, LOW);
+  digitalWrite(MOTOR_PIN_HOMBRO, LOW);
 
   seleccionarCanalMux(CANAL_LUMBAR);
   mpuLumbar.initialize();
@@ -116,11 +118,11 @@ void loop() {
 
     seleccionarCanalMux(CANAL_HOMBRO);
     anguloActualHombro = calcularAngulo(mpuHombro, dt, xhatHombro, PHombro);
-    verificarPostura(UMBRAL_ANGULO_ALERTA_HOMBRO, anguloActualHombro, anguloReferenciaHombro, malaPosturaHombro, tiempoHombro, MOTOR_PIN_LUMBAR);
+    verificarPostura(UMBRAL_ANGULO_ALERTA_HOMBRO, anguloActualHombro, anguloReferenciaHombro, malaPosturaHombro, tiempoHombro, MOTOR_PIN_HOMBRO);
 
     imprimirEstado("Lumbar", UMBRAL_ANGULO_ALERTA_LUMBAR, anguloActualLumbar, anguloReferenciaLumbar, MOTOR_PIN_LUMBAR);
     imprimirEstado("Toráxico", UMBRAL_ANGULO_ALERTA_TORACICO, anguloActualToracico, anguloReferenciaToracico, MOTOR_PIN_TORACICO);
-    imprimirEstado("Hombro", UMBRAL_ANGULO_ALERTA_HOMBRO, anguloActualHombro, anguloReferenciaHombro, MOTOR_PIN_LUMBAR);
+    imprimirEstado("Hombro", UMBRAL_ANGULO_ALERTA_HOMBRO, anguloActualHombro, anguloReferenciaHombro, MOTOR_PIN_HOMBRO);
   }
   
   enviarDatosESP32();
@@ -248,7 +250,7 @@ void enviarDatosESP32() {
   Serial1.print(",\"alerta\":");
   Serial1.print((abs(anguloActualHombro - anguloReferenciaHombro) > UMBRAL_ANGULO_ALERTA_HOMBRO) ? "true" : "false");
   Serial1.print(",\"motor\":");
-  Serial1.print((digitalRead(MOTOR_PIN_LUMBAR) == HIGH) ? "true" : "false");
+  Serial1.print((digitalRead(MOTOR_PIN_HOMBRO) == HIGH) ? "true" : "false");
   Serial1.print("},");
 
   Serial1.print("\"timestamp\":");
