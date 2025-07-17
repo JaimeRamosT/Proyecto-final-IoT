@@ -10,7 +10,7 @@
 // Pines
 const int MOTOR_PIN_LUMBAR = 3;
 const int MOTOR_PIN_TORACICO = 4;
-// const int MOTOR_PIN_HOMBRO = 5;   -- Morido
+const int MOTOR_PIN_HOMBRO = 5;
 
 // Umbrales y Tiempos
 const float UMBRAL_ANGULO_ALERTA_LUMBAR = 15.0;
@@ -55,19 +55,30 @@ unsigned long tiempoAnteriorLoop = 0;
 void seleccionarCanalMux(uint8_t canal) {
   Wire.beginTransmission(MUX_ADDR);
   Wire.write(1 << canal);
-  Wire.endTransmission();
+  uint8_t err = Wire.endTransmission();
+  if (err) {
+    Serial.print("Error MUX canal ");
+    Serial.print(canal);
+    Serial.print(": ");
+    Serial.println(err);
+  }
+  delayMicroseconds(100);
 }
 
 void setup() {
   Serial.begin(115200);
+  Serial1.begin(115200);
   Wire.begin();
 
   pinMode(MOTOR_PIN_LUMBAR, OUTPUT);
   pinMode(MOTOR_PIN_TORACICO, OUTPUT);
+  pinMode(MOTOR_PIN_HOMBRO, OUTPUT);
   digitalWrite(MOTOR_PIN_LUMBAR, LOW);
   digitalWrite(MOTOR_PIN_TORACICO, LOW);
+  digitalWrite(MOTOR_PIN_HOMBRO, LOW);
 
   seleccionarCanalMux(CANAL_LUMBAR);
+  
   mpuLumbar.initialize();
   if (!mpuLumbar.testConnection()) {
     Serial.println("MPU LUMBAR no detectado");
@@ -76,6 +87,7 @@ void setup() {
   Serial.println("MPU LUMBAR conectado.");
 
   seleccionarCanalMux(CANAL_TORACICO);
+  Serial.println("Cambio a toracico");
   mpuToracico.initialize();
   if (!mpuToracico.testConnection()) {
     Serial.println("MPU TORÁCICO no detectado");
@@ -116,14 +128,14 @@ void loop() {
 
     seleccionarCanalMux(CANAL_HOMBRO);
     anguloActualHombro = calcularAngulo(mpuHombro, dt, xhatHombro, PHombro);
-    verificarPostura(UMBRAL_ANGULO_ALERTA_HOMBRO, anguloActualHombro, anguloReferenciaHombro, malaPosturaHombro, tiempoHombro, MOTOR_PIN_LUMBAR);
+    verificarPostura(UMBRAL_ANGULO_ALERTA_HOMBRO, anguloActualHombro, anguloReferenciaHombro, malaPosturaHombro, tiempoHombro, MOTOR_PIN_HOMBRO);
 
     imprimirEstado("Lumbar", UMBRAL_ANGULO_ALERTA_LUMBAR, anguloActualLumbar, anguloReferenciaLumbar, MOTOR_PIN_LUMBAR);
     imprimirEstado("Toráxico", UMBRAL_ANGULO_ALERTA_TORACICO, anguloActualToracico, anguloReferenciaToracico, MOTOR_PIN_TORACICO);
-    imprimirEstado("Hombro", UMBRAL_ANGULO_ALERTA_HOMBRO, anguloActualHombro, anguloReferenciaHombro, MOTOR_PIN_LUMBAR);
+    imprimirEstado("Hombro", UMBRAL_ANGULO_ALERTA_HOMBRO, anguloActualHombro, anguloReferenciaHombro, MOTOR_PIN_HOMBRO);
   }
   
-  enviarDatosESP32();
+  //enviarDatosESP32();
   delay(1000);
 }
 
