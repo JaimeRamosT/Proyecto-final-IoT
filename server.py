@@ -1,72 +1,124 @@
 from fastapi import FastAPI
 from fastapi.responses import HTMLResponse
-import paho.mqtt.client as mqtt
+import serial
 import json
 from datetime import datetime
 from collections import deque
 import uvicorn
 import threading
+import time
 
 # 🔧 CONFIGURACIÓN SIMPLE
-MQTT_BROKER = "192.168.1.40"  # Misma IP que usa el ESP32
-MQTT_PORT = 1883
-MQTT_TOPIC = "cinturon/sensores"  # CORREGIDO: mismo topic que usa el ESP32
+BT_PORT = 'COM9'           # Puerto Bluetooth
+BAUD_RATE = 115200
 WEB_PORT = 8000
 
 # 📊 Variables globales para datos
 current_data = None
 eventos_malas_posturas = deque(maxlen=100)  # Últimos 100 eventos
+historial_posturas = deque(maxlen=200)  # Historial para gráfica tiempo vs postura
 estadisticas = {
     "total_malas": 0,
     "malas_hoy": 0,
     "porcentaje_buena": 100
 }
 
-app = FastAPI(title="Monitor Postura WiFi")
+# Estado de conexión
+conexion_bt_activa = False
+bt_serial = None
 
-# 🔌 Cliente MQTT
-def on_connect(client, userdata, flags, rc):
-    if rc == 0:
-        print(f"✅ Conectado a MQTT broker: {MQTT_BROKER}")
-        client.subscribe(MQTT_TOPIC)
-        print(f"📡 Suscrito al topic: {MQTT_TOPIC}")
-    else:
-        print(f"❌ Error MQTT: {rc}")
+# Estado de postura para evitar registros duplicados
+mala_postura_registrada = False  # Flag para saber si ya registramos esta sesión de mala postura
 
-def on_message(client, userdata, msg):
-    global current_data, eventos_malas_posturas, estadisticas
+app = FastAPI(title="Monitor Postura Bluetooth")
+
+# 🔌 Conexión Bluetooth
+def init_bluetooth():
+    global bt_serial, conexion_bt_activa
+    
+    while True:
+        try:
+            print(f"🔄 Conectando a Bluetooth: {BT_PORT}")
+            bt_serial = serial.Serial(BT_PORT, BAUD_RATE, timeout=1)
+            time.sleep(2)  # Esperar inicialización
+            conexion_bt_activa = True
+            print(f"✅ Bluetooth conectado: {BT_PORT}")
+            
+            # Leer datos continuamente
+            while conexion_bt_activa:
+                try:
+                    line = bt_serial.readline().decode('utf-8').strip()
+                    if line:
+                        print(f"📱 BT recibido: {line}")
+                        procesar_datos_bluetooth(line)
+                        
+                except serial.SerialException as e:
+                    print(f"❌ Error serial: {e}")
+                    break
+                except Exception as e:
+                    print(f"❌ Error leyendo BT: {e}")
+                    
+        except serial.SerialException as e:
+            print(f"❌ Error conectando Bluetooth: {e}")
+            conexion_bt_activa = False
+            
+        except Exception as e:
+            print(f"❌ Error Bluetooth: {e}")
+            conexion_bt_activa = False
+            
+        # Si se desconecta, cerrar puerto y reintentar
+        if bt_serial:
+            bt_serial.close()
+            bt_serial = None
+        print("🔄 Reintentando Bluetooth en 5 segundos...")
+        time.sleep(5)
+
+def procesar_datos_bluetooth(json_string):
+    global current_data, eventos_malas_posturas, estadisticas, historial_posturas, mala_postura_registrada
     
     try:
-        # Decodificar y parsear datos JSON
-        payload = msg.payload.decode()
-        print(f"📨 Mensaje recibido: {payload}")
-        
-        data = json.loads(payload)
+        # Parsear datos JSON
+        data = json.loads(json_string)
         
         # Actualizar datos actuales
+        now = datetime.now()
         current_data = {
             "lumbar": data["lumbar"],
             "toracico": data["toracico"], 
             "hombro": data["hombro"],
-            "timestamp": datetime.now().strftime("%H:%M:%S"),
-            "fecha": datetime.now().strftime("%Y-%m-%d")
+            "timestamp": now.strftime("%H:%M:%S"),
+            "fecha": now.strftime("%Y-%m-%d")
         }
         
         # Verificar si hay mala postura
         mala_postura = (
-            data["lumbar"]["malaPostura"] or 
-            data["toracico"]["malaPostura"] or 
-            data["hombro"]["malaPostura"]
+            data["lumbar"]["alerta"] or 
+            data["toracico"]["alerta"] or 
+            data["hombro"]["alerta"]
         )
+
+        # Agregar al historial para gráfica (tiempo vs postura) - SIEMPRE
+        historial_posturas.append({
+            "timestamp": now.strftime("%H:%M:%S"),
+            "datetime": now.isoformat(),
+            "postura_mala": mala_postura,
+            "lumbar_mala": data["lumbar"]["alerta"],
+            "toracico_mala": data["toracico"]["alerta"],
+            "hombro_mala": data["hombro"]["alerta"],
+            "angulo_lumbar": data["lumbar"]["angulo"],
+            "angulo_toracico": data["toracico"]["angulo"],
+            "angulo_hombro": data["hombro"]["angulo"]
+        })
         
-        # Agregar evento si hay mala postura
-        if mala_postura:
+        # NUEVA LÓGICA: Solo registrar evento si es una nueva sesión de mala postura
+        if mala_postura and not mala_postura_registrada:
+            # Primera detección de mala postura - REGISTRAR
             sensores_afectados = []
-            if data["lumbar"]["malaPostura"]:
+            if data["lumbar"]["alerta"]:
                 sensores_afectados.append("Lumbar")
-            if data["toracico"]["malaPostura"]:
+            if data["toracico"]["alerta"]:
                 sensores_afectados.append("Torácico")
-            if data["hombro"]["malaPostura"]:
+            if data["hombro"]["alerta"]:
                 sensores_afectados.append("Hombro")
             
             evento = {
@@ -82,30 +134,32 @@ def on_message(client, userdata, msg):
             # Contar malas posturas de hoy
             hoy = datetime.now().strftime("%Y-%m-%d")
             estadisticas["malas_hoy"] = sum(1 for e in eventos_malas_posturas if e["fecha"] == hoy)
-        
-        print(f"📊 Datos procesados: {current_data['timestamp']} - Mala postura: {mala_postura}")
+            
+            # Marcar que ya registramos esta sesión de mala postura
+            mala_postura_registrada = True
+            
+            print(f"🚨 NUEVA mala postura registrada: {', '.join(sensores_afectados)} - {current_data['timestamp']}")
+            
+        elif not mala_postura and mala_postura_registrada:
+            # La postura se corrigió - resetear flag para permitir futuras detecciones
+            mala_postura_registrada = False
+            print(f"✅ Postura corregida - Sistema listo para detectar nuevas malas posturas - {current_data['timestamp']}")
+            
+        elif mala_postura and mala_postura_registrada:
+            # Sigue en mala postura - NO registrar
+            print(f"⏳ Continúa en mala postura (no se registra) - {current_data['timestamp']}")
+        else:
+            # Postura buena - todo normal
+            print(f"📊 Postura buena - {current_data['timestamp']}")
         
     except json.JSONDecodeError as e:
         print(f"❌ Error JSON: {e}")
-        print(f"📝 Payload recibido: {msg.payload.decode()}")
+        print(f"📝 Datos recibidos: {json_string}")
     except KeyError as e:
         print(f"❌ Error clave faltante: {e}")
         print(f"📝 Datos recibidos: {data}")
     except Exception as e:
         print(f"❌ Error procesando datos: {e}")
-
-# Inicializar MQTT
-def init_mqtt():
-    client = mqtt.Client()
-    client.on_connect = on_connect
-    client.on_message = on_message
-    
-    try:
-        print(f"🔄 Conectando a broker MQTT: {MQTT_BROKER}:{MQTT_PORT}")
-        client.connect(MQTT_BROKER, MQTT_PORT, 60)
-        client.loop_forever()
-    except Exception as e:
-        print(f"❌ Error MQTT: {e}")
 
 # 🌐 Rutas Web
 @app.get("/", response_class=HTMLResponse)
@@ -117,11 +171,11 @@ def dashboard():
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Monitor de Postura WiFi</title>
+    <title>Monitor de Postura</title>
     <style>
         :root {
             --color1: #12170c; --color2: #124645; --color3: #159a68;
-            --color4: #ceda78; --color5: #f8efe1;
+            --color4: #ceda78; --color5: #f8efe1; --bluetooth: #0e7db8;
         }
         * { margin: 0; padding: 0; box-sizing: border-box; }
         body {
@@ -130,14 +184,15 @@ def dashboard():
             min-height: 100vh; padding: 20px;
         }
         .header {
-            background: linear-gradient(135deg, var(--color1), var(--color2));
+            background: linear-gradient(135deg, var(--color1), var(--bluetooth));
             color: white; padding: 20px; border-radius: 10px; margin-bottom: 20px;
             text-align: center;
         }
         .status { 
-            background: var(--color3); color: white; padding: 8px 16px; 
+            background: var(--bluetooth); color: white; padding: 8px 16px; 
             border-radius: 20px; display: inline-block; margin-top: 10px;
         }
+        .status.desconectado { background: #ef4444; }
         .postura-general {
             padding: 15px; border-radius: 10px; margin-bottom: 20px;
             text-align: center; font-weight: bold; font-size: 1.1rem;
@@ -186,18 +241,26 @@ def dashboard():
         }
         .loading { text-align: center; color: var(--color2); padding: 20px; }
         .connection-info {
-            background: rgba(18, 70, 69, 0.1); padding: 10px; border-radius: 5px;
-            margin-top: 10px; font-size: 0.8rem; color: var(--color2);
+            background: rgba(14, 125, 184, 0.1); padding: 10px; border-radius: 5px;
+            margin-top: 10px; font-size: 0.8rem; color: var(--bluetooth);
         }
-        @media (max-width: 768px) { .grid { grid-template-columns: 1fr; } .stats { grid-template-columns: 1fr; } }
+        .status-deteccion {
+            background: rgba(255,255,255,0.1); padding: 8px 12px; border-radius: 15px;
+            margin-top: 5px; font-size: 0.7rem; display: inline-block;
+        }
+        @media (max-width: 768px) { 
+            .grid { grid-template-columns: 1fr; } 
+            .stats { grid-template-columns: 1fr; }
+        }
     </style>
 </head>
 <body>
     <div class="header">
-        <h1>🏃 Monitor de Postura WiFi</h1>
+        <h1>📱 Monitor de Postura</h1>
         <div class="status" id="status">Conectando...</div>
+        <div class="status-deteccion" id="statusDeteccion">Sistema de detección: Listo</div>
         <div class="connection-info">
-            MQTT: ''' + MQTT_BROKER + ''' | Topic: ''' + MQTT_TOPIC + '''
+            Puerto Bluetooth: ''' + BT_PORT + ''' | Velocidad: ''' + str(BAUD_RATE) + ''' bps
         </div>
     </div>
 
@@ -207,7 +270,7 @@ def dashboard():
         <div class="card">
             <h3>📊 Sensores</h3>
             <div id="sensores">
-                <div class="loading">Esperando datos MQTT...</div>
+                <div class="loading">Esperando datos Bluetooth...</div>
             </div>
         </div>
 
@@ -226,16 +289,141 @@ def dashboard():
         </div>
 
         <div class="card timeline-card">
+            <h3>📈 Línea de Tiempo: Postura vs Tiempo</h3>
+            <div style="position: relative; height: 300px; margin-bottom: 20px;">
+                <canvas id="posturaChart"></canvas>
+            </div>
+        </div>
+
+        <div class="card timeline-card">
             <h3>⚠️ Eventos Recientes</h3>
-            <button class="btn" onclick="limpiarEventos()">🗑️ Limpiar</button>
+            <button class="btn" onclick="limpiarEventos()">🗑️ Limpiar Todo</button>
             <div class="timeline" id="timeline">
                 <div class="loading">Sin eventos...</div>
             </div>
         </div>
     </div>
 
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/3.9.1/chart.min.js"></script>
     <script>
         let actualizando = true;
+        let posturaChart = null;
+
+        // Inicializar gráfica
+        function initChart() {
+            const ctx = document.getElementById('posturaChart').getContext('2d');
+            posturaChart = new Chart(ctx, {
+                type: 'line',
+                data: {
+                    labels: [],
+                    datasets: [
+                        {
+                            label: 'Postura General',
+                            data: [],
+                            borderColor: '#ef4444',
+                            backgroundColor: 'rgba(239, 68, 68, 0.1)',
+                            borderWidth: 2,
+                            fill: true,
+                            tension: 0.1,
+                            pointBackgroundColor: '#ef4444',
+                            pointBorderColor: '#ffffff',
+                            pointBorderWidth: 2,
+                            pointRadius: 4
+                        },
+                        {
+                            label: 'Lumbar',
+                            data: [],
+                            borderColor: '#ff9500',
+                            backgroundColor: 'rgba(255, 149, 0, 0.1)',
+                            borderWidth: 1,
+                            fill: false,
+                            tension: 0.1,
+                            pointRadius: 2
+                        },
+                        {
+                            label: 'Torácico',
+                            data: [],
+                            borderColor: '#007aff',
+                            backgroundColor: 'rgba(0, 122, 255, 0.1)',
+                            borderWidth: 1,
+                            fill: false,
+                            tension: 0.1,
+                            pointRadius: 2
+                        },
+                        {
+                            label: 'Hombro',
+                            data: [],
+                            borderColor: '#5856d6',
+                            backgroundColor: 'rgba(88, 86, 214, 0.1)',
+                            borderWidth: 1,
+                            fill: false,
+                            tension: 0.1,
+                            pointRadius: 2
+                        }
+                    ]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    interaction: {
+                        intersect: false,
+                        mode: 'index'
+                    },
+                    plugins: {
+                        legend: {
+                            display: true,
+                            position: 'top'
+                        },
+                        tooltip: {
+                            mode: 'index',
+                            intersect: false,
+                            callbacks: {
+                                label: function(context) {
+                                    const label = context.dataset.label || '';
+                                    const value = context.parsed.y;
+                                    return label + ': ' + (value === 1 ? 'MALA' : 'BUENA');
+                                }
+                            }
+                        }
+                    },
+                    scales: {
+                        x: {
+                            display: true,
+                            title: {
+                                display: true,
+                                text: 'Tiempo'
+                            },
+                            grid: {
+                                display: true,
+                                color: 'rgba(0,0,0,0.1)'
+                            }
+                        },
+                        y: {
+                            display: true,
+                            title: {
+                                display: true,
+                                text: 'Estado Postura'
+                            },
+                            min: -0.1,
+                            max: 1.1,
+                            ticks: {
+                                stepSize: 1,
+                                callback: function(value) {
+                                    return value === 1 ? 'MALA' : value === 0 ? 'BUENA' : '';
+                                }
+                            },
+                            grid: {
+                                display: true,
+                                color: 'rgba(0,0,0,0.1)'
+                            }
+                        }
+                    },
+                    animation: {
+                        duration: 0 // Desactivar animaciones para tiempo real
+                    }
+                }
+            });
+        }
 
         async function cargarDatos() {
             try {
@@ -243,14 +431,64 @@ def dashboard():
                 const data = await resp.json();
                 
                 if (data.success) {
-                    document.getElementById('status').textContent = 'Conectado MQTT ✓';
+                    document.getElementById('status').textContent = 'Conectado Bluetooth 📱';
+                    document.getElementById('status').className = 'status';
                     mostrarDatos(data.data);
                 } else {
-                    document.getElementById('status').textContent = 'Sin datos MQTT';
+                    document.getElementById('status').textContent = 'Sin datos Bluetooth ❌';
+                    document.getElementById('status').className = 'status desconectado';
                 }
             } catch (error) {
                 document.getElementById('status').textContent = 'Error conexión ❌';
+                document.getElementById('status').className = 'status desconectado';
                 console.error('Error:', error);
+            }
+        }
+
+        async function cargarStatus() {
+            try {
+                const resp = await fetch('/api/status');
+                const status = await resp.json();
+                
+                // Actualizar estado de detección
+                const statusDeteccion = document.getElementById('statusDeteccion');
+                if (status.mala_postura_activa) {
+                    statusDeteccion.textContent = 'Sesión de mala postura activa - Esperando corrección';
+                    statusDeteccion.style.background = 'rgba(239, 68, 68, 0.3)';
+                } else {
+                    statusDeteccion.textContent = 'Sistema de detección: Listo para detectar';
+                    statusDeteccion.style.background = 'rgba(21, 154, 104, 0.3)';
+                }
+            } catch (error) {
+                console.error('Error cargando status:', error);
+            }
+        }
+
+        async function cargarHistorial() {
+            try {
+                const resp = await fetch('/api/historial');
+                const data = await resp.json();
+                
+                if (posturaChart && data.historial) {
+                    // Mantener solo los últimos 50 puntos para mejor rendimiento
+                    const historial = data.historial.slice(-50);
+                    
+                    const labels = historial.map(item => item.timestamp);
+                    const posturaGeneral = historial.map(item => item.postura_mala ? 1 : 0);
+                    const lumbar = historial.map(item => item.lumbar_mala ? 1 : 0);
+                    const toracico = historial.map(item => item.toracico_mala ? 1 : 0);
+                    const hombro = historial.map(item => item.hombro_mala ? 1 : 0);
+
+                    posturaChart.data.labels = labels;
+                    posturaChart.data.datasets[0].data = posturaGeneral;
+                    posturaChart.data.datasets[1].data = lumbar;
+                    posturaChart.data.datasets[2].data = toracico;
+                    posturaChart.data.datasets[3].data = hombro;
+                    
+                    posturaChart.update('none'); // Actualizar sin animación
+                }
+            } catch (error) {
+                console.error('Error cargando historial:', error);
             }
         }
 
@@ -258,28 +496,28 @@ def dashboard():
             // Actualizar sensores
             const sensores = document.getElementById('sensores');
             sensores.innerHTML = `
-                <div class="sensor ${data.lumbar.malaPostura ? 'mala' : ''}">
+                <div class="sensor ${data.lumbar.alerta ? 'mala' : ''}">
                     <span><strong>Lumbar</strong></span>
                     <span>${data.lumbar.angulo.toFixed(1)}° 
-                        <span class="badge ${data.lumbar.malaPostura ? 'mala' : ''}">${data.lumbar.malaPostura ? 'MALA' : 'BUENA'}</span>
+                        <span class="badge ${data.lumbar.alerta ? 'mala' : ''}">${data.lumbar.alerta ? 'MALA' : 'BUENA'}</span>
                     </span>
                 </div>
-                <div class="sensor ${data.toracico.malaPostura ? 'mala' : ''}">
+                <div class="sensor ${data.toracico.alerta ? 'mala' : ''}">
                     <span><strong>Torácico</strong></span>
                     <span>${data.toracico.angulo.toFixed(1)}° 
-                        <span class="badge ${data.toracico.malaPostura ? 'mala' : ''}">${data.toracico.malaPostura ? 'MALA' : 'BUENA'}</span>
+                        <span class="badge ${data.toracico.alerta ? 'mala' : ''}">${data.toracico.alerta ? 'MALA' : 'BUENA'}</span>
                     </span>
                 </div>
-                <div class="sensor ${data.hombro.malaPostura ? 'mala' : ''}">
+                <div class="sensor ${data.hombro.alerta ? 'mala' : ''}">
                     <span><strong>Hombro</strong></span>
                     <span>${data.hombro.angulo.toFixed(1)}° 
-                        <span class="badge ${data.hombro.malaPostura ? 'mala' : ''}">${data.hombro.malaPostura ? 'MALA' : 'BUENA'}</span>
+                        <span class="badge ${data.hombro.alerta ? 'mala' : ''}">${data.hombro.alerta ? 'MALA' : 'BUENA'}</span>
                     </span>
                 </div>
             `;
 
             // Actualizar postura general
-            const malaPostura = data.lumbar.malaPostura || data.toracico.malaPostura || data.hombro.malaPostura;
+            const malaPostura = data.lumbar.alerta || data.toracico.alerta || data.hombro.alerta;
             const posturaElement = document.getElementById('posturaGeneral');
             if (malaPostura) {
                 posturaElement.textContent = '❌ POSTURA GENERAL: MALA';
@@ -331,7 +569,8 @@ def dashboard():
                 await fetch('/api/limpiar', { method: 'POST' });
                 cargarEventos();
                 cargarEstadisticas();
-                alert('Eventos limpiados');
+                cargarHistorial(); // También actualizar gráfica
+                alert('Todos los datos limpiados');
             } catch (error) {
                 alert('Error al limpiar');
             }
@@ -342,12 +581,19 @@ def dashboard():
                 cargarDatos();
                 cargarEstadisticas();
                 cargarEventos();
+                cargarHistorial(); // Actualizar gráfica
+                cargarStatus(); // Actualizar estado de detección
             }
         }
 
+        // Inicializar cuando se carga la página
+        window.addEventListener('load', function() {
+            initChart();
+            actualizar(); // Cargar datos iniciales
+        });
+
         // Iniciar actualizaciones
         setInterval(actualizar, 2000); // Cada 2 segundos
-        actualizar(); // Cargar inmediatamente
     </script>
 </body>
 </html>
@@ -356,7 +602,7 @@ def dashboard():
 @app.get("/api/datos")
 def obtener_datos():
     """API para obtener datos actuales"""
-    if current_data:
+    if current_data and conexion_bt_activa:
         return {"success": True, "data": current_data}
     return {"success": False, "data": None}
 
@@ -370,27 +616,46 @@ def obtener_eventos():
     """API para eventos de mala postura"""
     return {"eventos": list(eventos_malas_posturas)[:20]}  # Últimos 20
 
+@app.get("/api/historial")
+def obtener_historial():
+    """API para historial de posturas (gráfica tiempo vs postura)"""
+    return {"historial": list(historial_posturas)}
+
+@app.get("/api/status")
+def obtener_status():
+    """API para estado de conexión"""
+    return {
+        "bluetooth_conectado": conexion_bt_activa,
+        "puerto": BT_PORT,
+        "mala_postura_activa": mala_postura_registrada  # Nuevo campo para mostrar si hay una mala postura activa
+    }
+
 @app.post("/api/limpiar")
 def limpiar_eventos():
-    """Limpiar historial de eventos"""
-    global eventos_malas_posturas, estadisticas
+    """Limpiar historial de eventos y gráfica"""
+    global eventos_malas_posturas, estadisticas, historial_posturas, mala_postura_registrada
     eventos_malas_posturas.clear()
+    historial_posturas.clear()
     estadisticas = {"total_malas": 0, "malas_hoy": 0, "porcentaje_buena": 100}
+    mala_postura_registrada = False  # Resetear flag de postura registrada
+    print("🗑️ Datos limpiados - Sistema reseteado")
     return {"success": True}
 
 if __name__ == "__main__":
-    print("🏃 Monitor de Postura WiFi")
+    print("📱 Monitor de Postura Bluetooth - Versión Inteligente")
     print("=" * 60)
-    print(f"📡 MQTT Broker: {MQTT_BROKER}:{MQTT_PORT}")
-    print(f"📋 Topic MQTT: {MQTT_TOPIC}")
+    print(f"📱 Puerto Bluetooth: {BT_PORT} @ {BAUD_RATE} bps")
     print(f"🌐 Dashboard: http://localhost:{WEB_PORT}")
     print("=" * 60)
+    print("🔄 Flujo: Arduino → Bluetooth → Dashboard")
+    print("🧠 Detección inteligente: Una alerta por sesión de mala postura")
+    print("=" * 60)
     
-    # Iniciar MQTT en hilo separado
-    mqtt_thread = threading.Thread(target=init_mqtt, daemon=True)
-    mqtt_thread.start()
+    # Iniciar Bluetooth en hilo separado
+    bt_thread = threading.Thread(target=init_bluetooth, daemon=True)
+    bt_thread.start()
     
-    print("⏳ Esperando datos del ESP32...")
+    print("⏳ Esperando datos del dispositivo Bluetooth...")
     
     # Iniciar servidor web
     uvicorn.run(app, host="0.0.0.0", port=WEB_PORT)
